@@ -1,8 +1,19 @@
 # Virtual Environments
 venv/
+.venv/
 pyvenv.cfg
 
-# Python Cache
+# Python Cache & Build Artifacts
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
+*.tmp.mp4
+
+# Temporary / Scratch Files
+scratch/
+*.log
+
+# OS Generated
+.DS_Store
+Thumbs.db

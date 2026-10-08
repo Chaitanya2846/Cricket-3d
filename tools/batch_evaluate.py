@@ -76,8 +76,11 @@ def process_clip(clip_id, clip_dir, stump_boxes_override=None):
     json.dump(out_result, open(os.path.join(out_dir, "result.json"), "w"), indent=2)
 
     # 6. Render
-    render_overlay_video(video_path, cal, fit, metrics, info, fps, os.path.join(out_dir, "overlay.mp4"))
-    render_virtual_view(cal, fit, metrics, info, os.path.join(out_dir, "virtual_view.png"), size=(size[0], size[1]))
+    deliv_label = f"DELIVERY {clip_id.split('_')[-1]}"
+    render_overlay_video(video_path, cal, fit, metrics, info, fps, os.path.join(out_dir, "overlay.mp4"),
+                         sf_scale=gt.get("swing_sf"), delivery_label=deliv_label)
+    render_virtual_view(cal, fit, metrics, info, os.path.join(out_dir, "virtual_view.png"),
+                        size=(size[0], size[1]), sf_scale=gt.get("swing_sf"), delivery_label=deliv_label)
     print(f"[render] generated overlay.mp4 and virtual_view.png")
 
     gt_spd = gt.get("speed_mph", gt.get("speed_kph", 0))

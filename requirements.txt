@@ -1,0 +1,18 @@
+# Cricket3D - Monocular 3D Cricket Delivery Tracking Requirements
+
+# Deep Learning & Computer Vision
+ultralytics>=8.3.0
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+
+# Numerical & Scientific Computing
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# Utilities & Configuration
+PyYAML>=6.0
+tqdm>=4.65.0
+pytest>=7.0.0
