@@ -23,13 +23,15 @@ def _res(p, W, P, size, mu, sg, wp):
 
 def calibrate(W, P, size, prior):
     mu = np.array(prior["mu"], float); sg = np.array(prior["sigma"], float); wp = prior.get("weight", 1.0)
-    lo = [-np.inf] * 6 + [200.0]; hi = [np.inf] * 6 + [3000.0]; best = None
+    f_max = max(4000.0, float(size[1]) * 3.5)
+    lo = [-np.inf] * 6 + [200.0]; hi = [np.inf] * 6 + [f_max]; best = None
     for ty in (8.0, 12.0, 16.0):                              # initial aim point down the pitch
         rv0 = lookat_rvec(mu, [0, ty, 0.0])
-        for f0 in np.linspace(300, 1600, 27):
+        for f0 in np.linspace(300, min(f_max - 200, 4200), 35):
             sol = least_squares(_res, np.r_[rv0, mu, f0], args=(W, P, size, mu, sg, wp),
                                 bounds=(lo, hi), x_scale=[0.05] * 3 + [0.2] * 3 + [50.0])
             if best is None or sol.cost < best.cost: best = sol
+
     p = best.x
     rep = (project(W, p[:3], p[3:6], p[6], size) - P)
     rmse = float(np.sqrt((rep ** 2).sum(1).mean()))

@@ -4,9 +4,10 @@ from geometry import *
 
 KD = 0.0061   # quadratic drag a = -KD*|v|*v   (Cd~0.4, r=35.6 mm, m=156 g)
 NAMES = ["x0", "y0", "z0", "vx", "vy", "vz", "ax", "e", "kh", "delta"]
-LO = np.array([-2.0, -1.5, 1.5, -8.0, 10.0, -15.0, -6.0, 0.25, 0.40, np.radians(-12)])
-HI = np.array([2.0,  2.5, 2.7,  8.0, 50.0,  10.0,  6.0, 0.80, 1.00, np.radians(12)])
-XS = np.array([0.2, 0.5, 0.2, 1.0, 2.0, 1.0, 1.0, 0.1, 0.1, 0.05])
+# Physics bounds: legal bowling crease zone y0 in [0.20, 1.20] m, release height z0 in [1.70, 2.45] m
+LO = np.array([-1.8,  0.20, 1.70, -7.0, 14.0, -15.0, -6.0, 0.25, 0.40, np.radians(-12)])
+HI = np.array([ 1.8,  1.20, 2.45,  7.0, 48.0,  10.0,  6.0, 0.80, 1.00, np.radians(12)])
+XS = np.array([ 0.2,  0.20, 0.15,  1.0,  2.0,   1.0,  1.0,  0.1,  0.1, np.radians(2)])
 
 
 
@@ -39,34 +40,49 @@ def simulate(theta, ts, fps, dt_factor=8):
     return pos, {"t": Tt, "pos": Pp, "vel": np.array(V_list), "bounce": bounce}
 
 
-def _res(theta, ts, obs, cal, fps, sig):
+def _res(theta, ts, obs, cal, fps, sig, crease_prior=(0.65, 2.10), w_crease=3.5):
     P, _ = simulate(theta, ts, fps, dt_factor=6)
     pix = project(P, cal["rvec"], cal["C"], cal["f"], cal["size"])
-    return ((pix - obs) / sig).ravel()
+    r_pix = ((pix - obs) / sig).ravel()
+    if w_crease > 0 and crease_prior is not None:
+        y0_ref, z0_ref = crease_prior
+        r_prior = np.array([
+            (theta[1] - y0_ref) / 0.18 * w_crease,
+            (theta[2] - z0_ref) / 0.18 * w_crease
+        ])
+        return np.concatenate([r_pix, r_prior])
+    return r_pix
 
 
-def _init(k, ts, obs, cal, z0=2.2):
+def _init(k, ts, obs, cal, z0=2.10, y0_ref=0.65):
     P0 = backproject_to_plane(obs[0], cal["rvec"], cal["C"], cal["f"], cal["size"], z0)
     B = backproject_to_plane(obs[k], cal["rvec"], cal["C"], cal["f"], cal["size"], BALL_R)
     tb = ts[k]
-    vxy = (B[:2] - P0[:2]) / tb
+    dy = max(4.0, B[1] - y0_ref)
+    vy = dy / tb * (1.0 + 0.5 * KD * dy)
     vz = (BALL_R - z0 + 0.5 * G * tb ** 2) / tb
-    return np.array([P0[0], P0[1], z0, vxy[0], vxy[1], vz, 0.0, 0.55, 0.80, 0.0])
+    vx = (B[0] - P0[0]) / tb
+    return np.array([P0[0], y0_ref, z0, vx, vy, vz, 0.0, 0.65, 0.85, 0.0])
 
 
-def fit_trajectory(frames, obs, cal, fps, sig=2.0, verbose=True, candidates=None):
+def fit_trajectory(frames, obs, cal, fps, sig=2.0, verbose=True, candidates=None,
+                   crease_prior=(0.65, 2.10), w_crease=3.5):
     frames = np.asarray(frames); obs = np.asarray(obs, float); ts = (frames - frames[0]) / fps
     best = None
     for k in (candidates if candidates is not None else range(2, len(frames) - 1)):
-        th0 = _init(k, ts, obs, cal)
+        th0 = _init(k, ts, obs, cal, z0=crease_prior[1] if crease_prior else 2.10,
+                    y0_ref=crease_prior[0] if crease_prior else 0.65)
         if not (10 < th0[4] < 50): continue
-        th0 = np.clip(th0, LO + 1e-6, HI - 1e-6)
-        sol = least_squares(_res, th0, bounds=(LO, HI), x_scale=XS, max_nfev=120,
-                            args=(ts, obs, cal, fps, sig))
+        th0 = np.clip(th0, LO + 1e-4, HI - 1e-4)
+        sol = least_squares(_res, th0, bounds=(LO, HI), x_scale=XS, max_nfev=150,
+                            args=(ts, obs, cal, fps, sig, crease_prior, w_crease))
         if verbose: print(f"  bounce candidate frame {frames[k]:4d}: cost={sol.cost:9.2f}")
         if best is None or sol.cost < best[0].cost: best = (sol, k)
     if best is None: raise SystemExit("No feasible start: check ball labels / calibration.")
     sol, k = best
-    n = len(ts); rms = float(np.sqrt(2 * sol.cost * sig ** 2 / n / 2))  # px, rms per coordinate pair
+    P_sol, _ = simulate(sol.x, ts, fps, dt_factor=6)
+    pix_sol = project(P_sol, cal["rvec"], cal["C"], cal["f"], cal["size"])
+    rms = float(np.sqrt(np.mean((pix_sol - obs) ** 2)))  # pure pixel reprojection RMS
     return {"theta": sol.x, "ts": ts, "frames": frames, "bounce_candidate": int(frames[k]),
             "cost": float(sol.cost), "rms_px": rms}
+
