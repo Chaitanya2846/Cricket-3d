@@ -20,6 +20,7 @@ def main():
     ap.add_argument("--mc", type=int, default=0,
                     help="Monte-Carlo runs for uncertainty (perturb calibration + pixel noise)")
     ap.add_argument("--no-render", action="store_true", help="Skip rendering overlay and virtual view")
+    ap.add_argument("--session-analytics", action="store_true", help="Generate session-level analytics images")
     a = ap.parse_args()
 
     cfg = load_cfg(a.config) if os.path.exists(a.config) else {}
@@ -113,6 +114,10 @@ def main():
         render_overlay_video(video_path, cal, fit, metrics, info, fps, out_overlay, sf_scale=gt.get("swing_sf"))
         render_virtual_view(cal, fit, metrics, info, out_virtual, sf_scale=gt.get("swing_sf"))
         print(f"-> {out_overlay}, {out_virtual}")
+
+    if a.session_analytics:
+        from session_analytics import generate_session_analytics
+        generate_session_analytics(out_dir=a.out_dir)
 
 
 if __name__ == "__main__":

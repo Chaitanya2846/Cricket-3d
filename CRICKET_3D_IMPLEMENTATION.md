@@ -8,7 +8,7 @@
 ### 1.1 Objective
 The **Cricket3D** system reconstructs the complete **3D physical flight path of a cricket delivery** from a single monocular video recording captured from behind the bowler's wickets (e.g., standard broadcast feed or smartphone footage). 
 
-From this monocular 3D trajectory, the system computes professional Hawk-Eye and FullTrack delivery analytics:
+From this monocular 3D trajectory, the system computes professional broadcast-grade 3D delivery analytics:
 - **Release Speed** ($\text{km/h}$ and $\text{mph}$)
 - **Pitch Length Classification** (Yorker, Full, Good Length, Short of Length, Short)
 - **Aerodynamic Swing Deviation** ($\text{cm}$ and lateral angular deflection)

@@ -170,6 +170,14 @@ def main():
     # Write grand comparison table
     summary_path = "outputs/batch_summary.json"
     json.dump(results, open(summary_path, "w"), indent=2)
+
+    # Generate session analytics images across all deliveries
+    try:
+        from session_analytics import generate_session_analytics
+        generate_session_analytics(summary_path, out_dir="outputs")
+        print("[session] Generated outputs/release_points.png, outputs/beehive.png, outputs/pitch_map.png")
+    except Exception as e:
+        print(f"[session] Note: session analytics generation failed: {e}")
     print("\n" + "=" * 80)
     print("ALL 4 CLIPS PROCESSED SUCCESSFULLY! SUMMARY TABLE:")
     print("=" * 80)
