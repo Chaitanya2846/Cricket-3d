@@ -135,23 +135,79 @@ def project_segments(pts_3d, rvec, C, f, size, near_z=0.15):
     return segments
 
 def load_session_deliveries(source="outputs/batch_summary.json"):
-    """Loads deliveries for the session."""
+    """
+    Loads deliveries for session analytics from any source:
+    - Path to batch_summary.json (list of delivery dicts)
+    - Path to a single result.json (single delivery dict)
+    - Path to a directory containing result.json files or batch_summary.json
+    - Glob pattern (e.g., 'data/clips/*/outputs/result.json')
+    - In-memory list or dict
+    """
+    import glob
+
     data = None
-    if isinstance(source, str) and os.path.exists(source):
-        try:
-            with open(source, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            print(f"Error loading {source}: {e}")
-            return []
-    elif isinstance(source, list):
+    if isinstance(source, list):
         data = source
+    elif isinstance(source, dict):
+        data = [source]
+    elif isinstance(source, str):
+        if os.path.isdir(source):
+            # Check for batch_summary.json in directory
+            bs_path = os.path.join(source, "batch_summary.json")
+            single_res = os.path.join(source, "result.json")
+            if os.path.exists(bs_path):
+                try:
+                    with open(bs_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception as e:
+                    print(f"Error loading {bs_path}: {e}")
+            elif os.path.exists(single_res):
+                try:
+                    with open(single_res, "r", encoding="utf-8") as f:
+                        data = [json.load(f)]
+                except Exception as e:
+                    print(f"Error loading {single_res}: {e}")
+            else:
+                # Search recursively for result.json files
+                found_files = sorted(glob.glob(os.path.join(source, "**", "result.json"), recursive=True))
+                if found_files:
+                    data = []
+                    for fp in found_files:
+                        try:
+                            with open(fp, "r", encoding="utf-8") as f:
+                                data.append(json.load(f))
+                        except Exception as e:
+                            print(f"Warning: could not read {fp}: {e}")
+        elif "*" in source or "?" in source:
+            found_files = sorted(glob.glob(source))
+            if found_files:
+                data = []
+                for fp in found_files:
+                    try:
+                        with open(fp, "r", encoding="utf-8") as f:
+                            c = json.load(f)
+                            if isinstance(c, list):
+                                data.extend(c)
+                            elif isinstance(c, dict):
+                                data.append(c)
+                    except Exception as e:
+                        print(f"Warning: could not read {fp}: {e}")
+        elif os.path.exists(source):
+            try:
+                with open(source, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                    data = [raw] if isinstance(raw, dict) else raw
+            except Exception as e:
+                print(f"Error loading {source}: {e}")
+                return []
 
     if not data:
         return []
 
     deliveries = []
     for item in data:
+        if not isinstance(item, dict):
+            continue
         cid = item.get("clip_id", "unknown")
         metrics = item.get("metrics", {})
         theta_dict = item.get("theta", {})
@@ -166,17 +222,19 @@ def load_session_deliveries(source="outputs/batch_summary.json"):
 
         release_pos = np.array([theta[0], theta[1], theta[2]], float)
 
+        # Simulate trajectory for bounce position and stump arrival
+        ts = np.linspace(0, 1.5, 300)
+        pos_sim, info = simulate(theta, ts, fps=60, dt_factor=10)
+        P = info["pos"]
+
         # Bounce position
         if "bounce_xy_m" in metrics:
             bx, by = metrics["bounce_xy_m"]
             bounce_pos = np.array([bx, by, 0.0356], float)
+        elif "bounce_pos" in info and info["bounce_pos"] is not None:
+            bounce_pos = np.array(info["bounce_pos"], float)
         else:
             bounce_pos = None
-
-        # Simulate trajectory for arrival at stumps
-        ts = np.linspace(0, 1.5, 300)
-        pos_sim, info = simulate(theta, ts, fps=60, dt_factor=10)
-        P = info["pos"]
 
         # Stumps arrival (Y = 20.12)
         idx_stump = np.where(P[:, 1] >= PITCH_L)[0]
@@ -187,7 +245,7 @@ def load_session_deliveries(source="outputs/batch_summary.json"):
         else:
             stump_arrival = P[-1].copy()
 
-        # Batter handedness: check gt.json or default to RHB
+        # Batter handedness: check item, gt.json, or default to RHB
         batter_hand = item.get("batter_hand")
         if not batter_hand:
             gt_path = f"data/clips/{cid}/gt.json"
@@ -209,7 +267,10 @@ def load_session_deliveries(source="outputs/batch_summary.json"):
             "stump_arrival": stump_arrival,
             "length_m": length_m,
             "batter_hand": batter_hand,
-            "metrics": metrics
+            "metrics": metrics,
+            "C": item.get("C"),
+            "f": item.get("f"),
+            "rvec": item.get("rvec")
         })
 
     return deliveries
@@ -406,33 +467,75 @@ def create_neutral_stadium_header(w=IMAGE_W, h=160):
     cv2.line(cv_blur, (0, 159), (w, 159), (30, 35, 40), 1, cv2.LINE_AA)
     return cv_blur
 
-def get_tripod_camera(cal_path="outputs/calibration.json", size=(IMAGE_W, IMAGE_H)):
-    """Retrieves the exact calibrated tripod camera position from overlay.mp4."""
+def get_tripod_camera(cal_source=None, size=(IMAGE_W, IMAGE_H), deliveries=None):
+    """
+    Retrieves calibrated tripod camera position.
+    Sources checked in priority:
+    1. cal_source as dict with 'C' and 'f'
+    2. cal_source as existing file path
+    3. Calibration from deliveries (if deliveries has 'C', 'f')
+    4. Auto-detect calibration.json in outputs/
+    5. Fallback to calibrated reference camera
+    """
     w, h = size
-    if os.path.exists(cal_path):
-        try:
-            with open(cal_path, "r", encoding="utf-8") as f:
-                cal = json.load(f)
-            C = np.array(cal["C"], float)
-            rvec = np.array(cal["rvec"], float)
-            f_cal = float(cal["f"]) * (h / 1280.0)
-            return C, rvec, f_cal
-        except Exception as e:
-            print(f"Warning: could not load {cal_path}: {e}")
+    DEFAULT_C = np.array([0.02, -6.73, 1.52], float)
+    DEFAULT_RVEC = np.array([1.6312, 0.0043, -0.0043], float)
+    DEFAULT_F = 1920.0 * (h / 1280.0)
 
-    # Default calibrated tripod camera from overlay.mp4
-    C = np.array([0.02, -6.73, 1.52], float)
-    rvec = np.array([1.6312, 0.0043, -0.0043], float)
-    f_cal = 1920.0 * (h / 1280.0)
-    return C, rvec, f_cal
+    def parse_cal(cal):
+        if not isinstance(cal, dict) or "C" not in cal:
+            return None
+        c_arr = np.asarray(cal["C"], float).flatten()
+        if len(c_arr) != 3:
+            return None
+        rv_raw = cal.get("rvec")
+        if rv_raw is not None and len(np.asarray(rv_raw, float).flatten()) == 3:
+            rv_arr = np.asarray(rv_raw, float).flatten()
+        else:
+            rv_arr = DEFAULT_RVEC
+        f_val = float(cal.get("f", 1920.0)) * (h / 1280.0)
+        return c_arr, rv_arr, f_val
+
+    if isinstance(cal_source, dict):
+        res = parse_cal(cal_source)
+        if res:
+            return res
+
+    if isinstance(cal_source, str) and os.path.exists(cal_source):
+        try:
+            with open(cal_source, "r", encoding="utf-8") as f:
+                res = parse_cal(json.load(f))
+                if res:
+                    return res
+        except Exception as e:
+            print(f"Warning: could not load {cal_source}: {e}")
+
+    # Check deliveries for camera parameters
+    if deliveries:
+        for d in deliveries:
+            res = parse_cal(d)
+            if res:
+                return res
+
+    # Check outputs/calibration.json
+    if os.path.exists("outputs/calibration.json"):
+        try:
+            with open("outputs/calibration.json", "r", encoding="utf-8") as f:
+                res = parse_cal(json.load(f))
+                if res:
+                    return res
+        except Exception:
+            pass
+
+    return DEFAULT_C, DEFAULT_RVEC, DEFAULT_F
 
 # --- Image 1: Release Points (Standalone Scene) ---
 
-def render_release_points_image(deliveries, out_path="outputs/release_points.png"):
+def render_release_points_image(deliveries, out_path="outputs/release_points.png", calib_source=None):
     """
     Renders the standalone Release Points cricket analytics image:
     Uses the exact calibrated tripod placement and angle from overlay.mp4,
-    matching pitch and ground texture, 3D measurement frame starting DIRECTLY from the bowling crease,
+    matching pitch and ground texture, 3D measurement frame starting DIRECTLY from the bowler's no-ball crease,
     foreground wooden stumps with bails, average release height, and ball clusters.
     """
     w, h = IMAGE_W, IMAGE_H
@@ -443,7 +546,7 @@ def render_release_points_image(deliveries, out_path="outputs/release_points.png
     card[0:stadium_h, :] = create_neutral_stadium_header(w, stadium_h)
 
     # EXACT TRIPOD CAMERA ANGLE from overlay.mp4
-    C, rv, f = get_tripod_camera("outputs/calibration.json", (w, h))
+    C, rv, f = get_tripod_camera(calib_source, (w, h), deliveries=deliveries)
     size = (w, h)
 
     # Pitch surface starts at the bowler stumps (Y=0.0) and extends to batter end (Y=PITCH_L)
@@ -831,16 +934,17 @@ def render_pitch_map_image(deliveries, out_path="outputs/pitch_map.png"):
 
     return save_image_safely(img_pil, out_path)
 
-def generate_session_analytics(deliveries_source="outputs/batch_summary.json", out_dir="outputs"):
+def generate_session_analytics(deliveries_source="outputs/batch_summary.json", out_dir="outputs", calib_source=None):
     """
     Independent generator of three standalone session-level cricket analytics images:
     1. pitch_map.png
     2. beehive.png
     3. release_points.png
+    Works on any session summary JSON, single delivery result.json, folder of clips/results, or glob pattern.
     """
     deliveries = load_session_deliveries(deliveries_source)
     if not deliveries:
-        print("Warning: No valid deliveries found to generate session analytics.")
+        print(f"Warning: No valid deliveries found from '{deliveries_source}' to generate session analytics.")
         return {}
 
     os.makedirs(out_dir, exist_ok=True)
@@ -858,10 +962,20 @@ def generate_session_analytics(deliveries_source="outputs/batch_summary.json", o
 
     # 3. Release Points
     rp_path = os.path.join(out_dir, "release_points.png")
-    render_release_points_image(deliveries, out_path=rp_path)
+    render_release_points_image(deliveries, out_path=rp_path, calib_source=calib_source)
     results["release_points"] = rp_path
 
+    print(f"[session] Generated {pm_path}, {bh_path}, {rp_path} ({len(deliveries)} deliveries)")
     return results
 
 if __name__ == "__main__":
-    generate_session_analytics()
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate Standalone Cricket Session Analytics Images (Pitch Map, Beehive, Release Points)")
+    parser.add_argument("--source", "-s", default="outputs/batch_summary.json",
+                        help="Path to session summary JSON, single result.json, directory of clips/results, or glob pattern")
+    parser.add_argument("--out-dir", "-o", default="outputs",
+                        help="Directory to save session analytics images")
+    parser.add_argument("--calib", "-c", default=None,
+                        help="Optional path to calibration.json or directory containing it")
+    args = parser.parse_args()
+    generate_session_analytics(args.source, out_dir=args.out_dir, calib_source=args.calib)

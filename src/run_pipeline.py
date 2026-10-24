@@ -97,8 +97,19 @@ def main():
         print("[uncertainty]", json.dumps(unc, indent=1))
 
     gt = cfg.get("ground_truth", {})
-    out = {"metrics": metrics, "ground_truth": gt, "uncertainty": unc, "theta": dict(zip(NAMES, map(float, fit["theta"]))),
-           "fit_rms_px": fit["rms_px"], "calibration_rmse_px": cal["rmse_px"]}
+    clip_id = os.path.splitext(os.path.basename(video_path))[0]
+    out = {
+        "clip_id": clip_id,
+        "metrics": metrics,
+        "ground_truth": gt,
+        "uncertainty": unc,
+        "theta": dict(zip(NAMES, map(float, fit["theta"]))),
+        "fit_rms_px": fit["rms_px"],
+        "calibration_rmse_px": cal["rmse_px"],
+        "C": cal.get("C", []),
+        "f": cal.get("f", 0.0),
+        "rvec": cal.get("rvec", []).tolist() if hasattr(cal.get("rvec", []), "tolist") else list(cal.get("rvec", []))
+    }
     res_path = os.path.join(a.out_dir, "result.json")
     json.dump(out, open(res_path, "w"), indent=2)
     print(json.dumps(metrics, indent=2))
@@ -117,7 +128,7 @@ def main():
 
     if a.session_analytics:
         from session_analytics import generate_session_analytics
-        generate_session_analytics(out_dir=a.out_dir)
+        generate_session_analytics(deliveries_source=res_path, out_dir=a.out_dir)
 
 
 if __name__ == "__main__":

@@ -445,15 +445,23 @@ python src/run_pipeline.py --video "path/to/clip.mp4" --ball "path/to/ball.csv" 
 | `--fps` | Video framerate override | Probed from video metadata |
 | `--stumps` | Path to custom wicket keypoints JSON file | `data/interim/stumps.json` |
 | `--redo-stumps` | Force re-detection of wickets via YOLO even if cached | `False` |
+| `--session-analytics` | Generate the 3 standalone session analytics images | `False` |
 
-### 5.4 Batch Evaluation
-To evaluate all deliveries in a folder simultaneously:
+### 5.4 Batch Evaluation Across Multiple Clips
+To evaluate all deliveries in a folder simultaneously and generate both video and session analytics:
 
 ```powershell
-python tools/batch_evaluate.py
+python tools/batch_evaluate.py --clips-dir data/clips --out-dir outputs
 ```
 
-### 5.5 Unit & Physics Testing
+### 5.5 Standalone Session Analytics Generation
+To generate session analytics images from any session summary, result file, or folder of clips:
+
+```powershell
+python src/session_analytics.py --source outputs/batch_summary.json --out-dir outputs
+```
+
+### 5.6 Unit & Physics Testing
 To run the automated synthetic trajectory test suite:
 
 ```powershell
@@ -474,3 +482,49 @@ All generated outputs are stored in `outputs/`:
 | [`outputs/calibration.json`](file:///c:/Users/chait/OneDrive/Desktop/cricket3d/outputs/calibration.json) | Solved camera matrix $\mathbf{K}$, rotation $\mathbf{R}$, translation $\mathbf{t}$, and camera center $\mathbf{C}$ |
 | [`outputs/result.json`](file:///c:/Users/chait/OneDrive/Desktop/cricket3d/outputs/result.json) | Complete delivery analytics: release speed, bounce coordinates, deviation, and wicket impact |
 | [`outputs/batch_summary.json`](file:///c:/Users/chait/OneDrive/Desktop/cricket3d/outputs/batch_summary.json) | Multi-clip evaluation summary report with accuracy comparisons |
+| [`outputs/pitch_map.png`](file:///c:/Users/chait/OneDrive/Desktop/cricket3d/outputs/pitch_map.png) | Standalone Pitch Map: 5 length zones, flanking labels/capsules, official ICC creases at both ends |
+| [`outputs/beehive.png`](file:///c:/Users/chait/OneDrive/Desktop/cricket3d/outputs/beehive.png) | Standalone Beehive: Batter-end arrival view with 4 zones, percentage distributions, and height marks |
+| [`outputs/release_points.png`](file:///c:/Users/chait/OneDrive/Desktop/cricket3d/outputs/release_points.png) | Standalone Release Points: Calibrated tripod view, frame rising from no-ball crease, 2 ground lines |
+
+---
+
+## 7. Session Analytics Image Generation Architecture
+
+```mermaid
+flowchart LR
+    A["Delivery Records<br/>(batch_summary.json / result.json)"] --> B["src/session_analytics.py"]
+    B --> C["render_pitch_map_image()"]
+    B --> D["render_beehive_image()"]
+    B --> E["render_release_points_image()"]
+    C --> F["outputs/pitch_map.png"]
+    D --> G["outputs/beehive.png"]
+    E --> H["outputs/release_points.png"]
+```
+
+### 7.1 Pitch Map Mathematics & Formulation
+- **Camera Pose**: Elevated broadcast perspective with camera center $\mathbf{C} = [0.0, -2.5, 18.0]^\top\text{ m}$, look-at target $[0.0, 8.0, 0.0]^\top\text{ m}$, and focal length $f = 930\text{ px}$. This produces a gentle $1.71:1$ taper across the $700 \times 1050$ canvas.
+- **Length Zones**:
+  - Full Toss: $Y \in [20.12, 21.40]\text{ m}$ ($0.0\text{m}-1.22\text{m}$ beyond stumps)
+  - Yorker: $Y \in [18.12, 20.12]\text{ m}$ ($0.0\text{m}-2.0\text{m}$ from stumps)
+  - Full: $Y \in [15.12, 18.12]\text{ m}$ ($2.0\text{m}-5.0\text{m}$ from stumps)
+  - Good Length: $Y \in [12.12, 15.12]\text{ m}$ ($5.0\text{m}-8.0\text{m}$ from stumps)
+  - Short: $Y \in [7.62, 12.12]\text{ m}$ ($8.0\text{m}-12.5\text{m}$ from stumps)
+- **Lower Pitch Section**: For $Y < 7.62\text{ m}$ down to $Y = -1.4\text{ m}$, the pitch is rendered as clay turf with roller lines and central blue corridor, displaying bowler stumps and creases cleanly.
+
+### 7.2 Beehive Arrival Plane
+- **Camera Pose**: Batter-end view with $\mathbf{C} = [0.0, 7.5, 2.30]^\top\text{ m}$, target $[0.0, 20.12, 1.05]^\top\text{ m}$, $f = 1750\text{ px}$.
+- **Arrival Grid**: Positioned at $Y = 20.12\text{ m}$ across four lateral zones:
+  - Z1 ($X \in [-1.20, -0.35]\text{ m}$): Outside off / wide off
+  - Z2 ($X \in [-0.35, 0.00]\text{ m}$): Off stump corridor
+  - Z3 ($X \in [0.00, 0.35]\text{ m}$): Middle & leg stumps
+  - Z4 ($X \in [0.35, 1.20]\text{ m}$): Down leg / wide leg
+- **Height Reference**: Tick marks at $1\text{M}$ ($Z = 1.0\text{ m}$) and $2\text{M}$ ($Z = 2.0\text{ m}$) on the right upright.
+
+### 7.3 Release Points Plane & Crease Structure
+- **Camera Pose**: Loaded directly from tripod calibration $\mathbf{C} \approx [0.02, -6.73, 1.52]^\top\text{ m}$, rotation vector $\mathbf{rvec} \approx [1.6312, 0.0043, -0.0043]^\top$, $f \approx 1575\text{ px}$.
+- **Measurement Frame Base**: Stands directly on the **bowler's no-ball crease (popping crease, $Y = 1.22\text{ m}$)** where the delivery is released.
+- **Two Ground Lines**:
+  1. Line 1: Bowling crease through bowler stumps ($Y = 0.0\text{ m}$).
+  2. Line 2: Bowler's no-ball crease ($Y = 1.22\text{ m}$).
+- **Pitch Termination**: Pitch turf and blue delivery corridor begin at $Y = 0.0\text{ m}$ and run forward; pitch turf behind the stumps ($Y < 0.0\text{ m}$) is removed to display natural green outfield turf.
+- **Average Height Line**: Yellow dashed horizontal line at $Z = \bar{z}_{\text{release}}$ slicing through the plotted ball coordinates.

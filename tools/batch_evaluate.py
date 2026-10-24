@@ -92,20 +92,22 @@ def process_clip(clip_id, clip_dir, stump_boxes_override=None):
 
 
 def main():
-    clips_dir = "data/clips"
+    import argparse
+    ap = argparse.ArgumentParser(description="Batch evaluation of monocular 3D cricket delivery tracking across clips")
+    ap.add_argument("--clips-dir", default="data/clips", help="Directory containing clip subfolders (clip_1, clip_2, ...)")
+    ap.add_argument("--clips", nargs="*", default=None, help="Specific clip folder names to process")
+    ap.add_argument("--out-dir", default="outputs", help="Output directory for batch summary and session analytics")
+    ap.add_argument("--redo-stumps", action="store_true", help="Force re-detection of stumps")
+    a = ap.parse_args()
+
+    os.makedirs(a.out_dir, exist_ok=True)
+    clips_dir = a.clips_dir
     results = []
 
-    # Clip 1 stump specification (from our verified detection/alignment)
-    c1_stumps = json.load(open("data/interim/stumps.json"))
-    res1 = process_clip("clip_1", os.path.join(clips_dir, "clip_1"), stump_boxes_override=c1_stumps)
-    results.append(res1)
-
-    # Clip 2 (has automatic near + far detections)
-    # Box: near = [296.64, 869.69, 390.19, 1112.0], far = [346.86, 588.85, 369.4, 644.99]
-    nb2 = [296.64, 869.69, 390.19, 1112.0]
-    fb2 = [346.86, 588.85, 369.4, 644.99]
-    wn2 = nb2[2] - nb2[0]
-    wf2 = fb2[2] - fb2[0]
+    # Benchmark clip stump specifications (for benchmark validation)
+    c1_stumps = json.load(open("data/interim/stumps.json")) if os.path.exists("data/interim/stumps.json") else None
+    nb2 = [296.64, 869.69, 390.19, 1112.0]; fb2 = [346.86, 588.85, 369.4, 644.99]
+    wn2, wf2 = nb2[2] - nb2[0], fb2[2] - fb2[0]
     c2_stumps = {
         "near": [
             [float(nb2[0] + 0.16 * wn2), float(nb2[1]), float(nb2[3] - 0.05 * (nb2[3] - nb2[1]))],
@@ -120,14 +122,8 @@ def main():
         ],
         "far_frames_used": 100
     }
-    res2 = process_clip("clip_2", os.path.join(clips_dir, "clip_2"), stump_boxes_override=c2_stumps)
-    results.append(res2)
-
-    # Clip 3 (1080x1350 @ 30fps)
-    nb3 = [482.22, 944.66, 584.62, 1240.6]
-    fb3 = [539.07, 718.1, 576.06, 805.59]
-    wn3 = nb3[2] - nb3[0]
-    wf3 = fb3[2] - fb3[0]
+    nb3 = [482.22, 944.66, 584.62, 1240.6]; fb3 = [539.07, 718.1, 576.06, 805.59]
+    wn3, wf3 = nb3[2] - nb3[0], fb3[2] - fb3[0]
     c3_stumps = {
         "near": [
             [float(nb3[0] + 0.16 * wn3), float(nb3[1]), float(nb3[3] - 0.05 * (nb3[3] - nb3[1]))],
@@ -142,14 +138,8 @@ def main():
         ],
         "far_frames_used": 17
     }
-    res3 = process_clip("clip_3", os.path.join(clips_dir, "clip_3"), stump_boxes_override=c3_stumps)
-    results.append(res3)
-
-    # Clip 4 (1080x1350 @ 30fps)
-    nb4 = [482.29, 943.87, 583.48, 1239.8]
-    fb4 = [540.31, 718.39, 579.66, 799.63]
-    wn4 = nb4[2] - nb4[0]
-    wf4 = fb4[2] - fb4[0]
+    nb4 = [482.29, 943.87, 583.48, 1239.8]; fb4 = [540.31, 718.39, 579.66, 799.63]
+    wn4, wf4 = nb4[2] - nb4[0], fb4[2] - fb4[0]
     c4_stumps = {
         "near": [
             [float(nb4[0] + 0.16 * wn4), float(nb4[1]), float(nb4[3] - 0.05 * (nb4[3] - nb4[1]))],
@@ -164,18 +154,40 @@ def main():
         ],
         "far_frames_used": 8
     }
-    res4 = process_clip("clip_4", os.path.join(clips_dir, "clip_4"), stump_boxes_override=c4_stumps)
-    results.append(res4)
+    known_stumps = {
+        "clip_1": c1_stumps,
+        "clip_2": c2_stumps,
+        "clip_3": c3_stumps,
+        "clip_4": c4_stumps
+    }
+
+    # Discover clip directories
+    if a.clips:
+        target_clips = a.clips
+    elif os.path.exists(clips_dir):
+        target_clips = sorted([d for d in os.listdir(clips_dir) if os.path.isdir(os.path.join(clips_dir, d))])
+    else:
+        target_clips = ["clip_1", "clip_2", "clip_3", "clip_4"]
+
+    for cid in target_clips:
+        cdir = os.path.join(clips_dir, cid) if not os.path.isabs(cid) and os.path.exists(os.path.join(clips_dir, cid)) else cid
+        cid_clean = os.path.basename(cdir)
+        stump_override = None if a.redo_stumps else known_stumps.get(cid_clean)
+        try:
+            res = process_clip(cid_clean, cdir, stump_boxes_override=stump_override)
+            results.append(res)
+        except Exception as e:
+            print(f"Error processing {cid_clean}: {e}")
 
     # Write grand comparison table
-    summary_path = "outputs/batch_summary.json"
+    summary_path = os.path.join(a.out_dir, "batch_summary.json")
     json.dump(results, open(summary_path, "w"), indent=2)
 
     # Generate session analytics images across all deliveries
     try:
         from session_analytics import generate_session_analytics
-        generate_session_analytics(summary_path, out_dir="outputs")
-        print("[session] Generated outputs/release_points.png, outputs/beehive.png, outputs/pitch_map.png")
+        generate_session_analytics(summary_path, out_dir=a.out_dir)
+        print(f"[session] Generated {a.out_dir}/release_points.png, {a.out_dir}/beehive.png, {a.out_dir}/pitch_map.png")
     except Exception as e:
         print(f"[session] Note: session analytics generation failed: {e}")
     print("\n" + "=" * 80)
